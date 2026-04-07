@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/aerokube/selenoid/info"
-	"github.com/docker/docker/api"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/aerokube/selenoid/info"
 
 	ggr "github.com/aerokube/ggr/config"
 	"github.com/aerokube/selenoid/config"
@@ -187,15 +187,16 @@ func init() {
 	}
 	ip, _, _ := net.SplitHostPort(u.Host)
 	environment.IP = ip
+
 	cli, err = createCompatibleDockerClient(
 		func(specifiedApiVersion string) {
-			log.Printf("[-] [INIT] [Using Docker API version: %s]", specifiedApiVersion)
+			log.Printf("[-] [INIT] [Using Docker API version from environment: %s]", specifiedApiVersion)
 		},
 		func(determinedApiVersion string) {
-			log.Printf("[-] [INIT] [Your Docker API version is %s]", determinedApiVersion)
+			log.Printf("[-] [INIT] [Negotiated Docker API version: %s]", determinedApiVersion)
 		},
 		func(defaultApiVersion string) {
-			log.Printf("[-] [INIT] [Did not manage to determine your Docker API version - using default version: %s]", defaultApiVersion)
+			log.Printf("[-] [INIT] [Using Docker client default API version: %s]", defaultApiVersion)
 		},
 	)
 	if err != nil {
@@ -204,28 +205,57 @@ func init() {
 	manager = &service.DefaultManager{Environment: &environment, Client: cli, Config: conf}
 }
 
-func createCompatibleDockerClient(onVersionSpecified, onVersionDetermined, onUsingDefaultVersion func(string)) (*client.Client, error) {
-	const dockerApiVersion = "DOCKER_API_VERSION"
-	dockerApiVersionEnv := os.Getenv(dockerApiVersion)
-	if dockerApiVersionEnv != "" {
-		onVersionSpecified(dockerApiVersionEnv)
-		return client.NewClientWithOpts(client.FromEnv)
+func createCompatibleDockerClient(
+	onVersionSpecified, onVersionDetermined, onUsingDefaultVersion func(string),
+) (*client.Client, error) {
+	const dockerAPIVersion = "DOCKER_API_VERSION"
+	if dockerAPIVersionEnv := os.Getenv(dockerAPIVersion); dockerAPIVersionEnv != "" {
+		onVersionSpecified(dockerAPIVersionEnv)
 	}
 
-	docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	docker, err := client.NewClientWithOpts(
+		client.FromEnv,
+		client.WithAPIVersionNegotiation(),
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	ctx := context.Background()
-	apiInfo, err := docker.ServerVersion(ctx)
+	apiInfo, err := docker.ServerVersion(context.Background())
 	if err != nil {
-		onUsingDefaultVersion(api.DefaultVersion)
-		return docker, nil
+		_ = docker.Close()
+		return nil, err
 	}
 
-	onVersionDetermined(apiInfo.APIVersion)
+	if docker.ClientVersion() != "" {
+		onVersionDetermined(docker.ClientVersion())
+	} else {
+		onUsingDefaultVersion(apiInfo.APIVersion)
+	}
+
 	return docker, nil
+}
+
+func parseVersion(ver string) (int, int) {
+	const point = "."
+	pieces := strings.Split(ver, point)
+	if len(pieces) < 2 {
+		return 0, 0
+	}
+	major, err := strconv.Atoi(pieces[0])
+	if err != nil {
+		return 0, 0
+	}
+	minor, err := strconv.Atoi(pieces[1])
+	if err != nil {
+		return 0, 0
+	}
+	return major, minor
+}
+
+func isDockerAPIVersionCorrect(docker *client.Client) bool {
+	_, err := docker.ServerVersion(context.Background())
+	return err == nil
 }
 
 func parseGgrHost(s string) *ggr.Host {

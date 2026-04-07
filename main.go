@@ -209,50 +209,23 @@ func createCompatibleDockerClient(onVersionSpecified, onVersionDetermined, onUsi
 	dockerApiVersionEnv := os.Getenv(dockerApiVersion)
 	if dockerApiVersionEnv != "" {
 		onVersionSpecified(dockerApiVersionEnv)
-	} else {
-		maxMajorVersion, maxMinorVersion := parseVersion(api.DefaultVersion)
-		minMajorVersion, minMinorVersion := parseVersion("1.24")
-		for majorVersion := maxMajorVersion; majorVersion >= minMajorVersion; majorVersion-- {
-			for minorVersion := maxMinorVersion; minorVersion >= minMinorVersion; minorVersion-- {
-				apiVersion := fmt.Sprintf("%d.%d", majorVersion, minorVersion)
-				_ = os.Setenv(dockerApiVersion, apiVersion)
-				docker, err := client.NewClientWithOpts(client.FromEnv)
-				if err != nil {
-					return nil, err
-				}
-				if isDockerAPIVersionCorrect(docker) {
-					onVersionDetermined(apiVersion)
-					return docker, nil
-				}
-				_ = docker.Close()
-			}
-		}
-		onUsingDefaultVersion(api.DefaultVersion)
+		return client.NewClientWithOpts(client.FromEnv)
 	}
-	return client.NewClientWithOpts(client.FromEnv)
-}
 
-func parseVersion(ver string) (int, int) {
-	const point = "."
-	pieces := strings.Split(ver, point)
-	major, err := strconv.Atoi(pieces[0])
+	docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		return 0, 0
+		return nil, err
 	}
-	minor, err := strconv.Atoi(pieces[1])
-	if err != nil {
-		return 0, 0
-	}
-	return major, minor
-}
 
-func isDockerAPIVersionCorrect(docker *client.Client) bool {
 	ctx := context.Background()
 	apiInfo, err := docker.ServerVersion(ctx)
 	if err != nil {
-		return false
+		onUsingDefaultVersion(api.DefaultVersion)
+		return docker, nil
 	}
-	return apiInfo.APIVersion == docker.ClientVersion()
+
+	onVersionDetermined(apiInfo.APIVersion)
+	return docker, nil
 }
 
 func parseGgrHost(s string) *ggr.Host {
